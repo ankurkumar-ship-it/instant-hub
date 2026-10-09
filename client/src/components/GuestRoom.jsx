@@ -6,6 +6,8 @@ import {
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 
+const BACKEND_URL = 'https://instant-hub-server.onrender.com';
+
 const rtcConfig = {
   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
 };
@@ -46,16 +48,18 @@ export default function GuestRoom() {
   };
 
   const initWebRTC = (name) => {
-    const socket = io('https://instant-hub-server.onrender.com');
-    socketRef.current.emit('join-room', { roomCode, isHost: false, guestName: name || 'Participant' });
+    const socket = io(BACKEND_URL);
+    socketRef.current = socket;
 
-    socketRef.current.on('kicked-out', () => {
+    socket.emit('join-room', { roomCode, isHost: false, guestName: name || 'Participant' });
+
+    socket.on('kicked-out', () => {
       setKicked(true);
       if (peerRef.current) peerRef.current.close();
       if (videoRef.current) videoRef.current.srcObject = null;
     });
 
-    socketRef.current.on('webrtc-offer', async ({ hostId, offer }) => {
+    socket.on('webrtc-offer', async ({ hostId, offer }) => {
       peerRef.current = new RTCPeerConnection(rtcConfig);
 
       peerRef.current.ontrack = (event) => {
@@ -66,7 +70,7 @@ export default function GuestRoom() {
       };
 
       peerRef.current.onicecandidate = (event) => {
-        if (event.candidate) {
+        if (event.candidate && socketRef.current) {
           socketRef.current.emit('ice-candidate', { targetId: hostId, candidate: event.candidate });
         }
       };
@@ -74,16 +78,16 @@ export default function GuestRoom() {
       await peerRef.current.setRemoteDescription(new RTCSessionDescription(offer));
       const answer = await peerRef.current.createAnswer();
       await peerRef.current.setLocalDescription(answer);
-      socketRef.current.emit('webrtc-answer', { hostId, answer });
+      socket.emit('webrtc-answer', { hostId, answer });
     });
 
-    socketRef.current.on('ice-candidate', async ({ candidate }) => {
+    socket.on('ice-candidate', async ({ candidate }) => {
       if (peerRef.current && candidate) {
         await peerRef.current.addIceCandidate(new RTCIceCandidate(candidate));
       }
     });
 
-    socketRef.current.on('screen-stopped', () => {
+    socket.on('screen-stopped', () => {
       if (videoRef.current) videoRef.current.srcObject = null;
       setHasLiveScreen(false);
     });
@@ -92,7 +96,7 @@ export default function GuestRoom() {
   const fetchSessionInfo = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`https://instant-hub-server.onrender.com/api/sessions/${sessionCode}/files`)
+      const res = await fetch(`${BACKEND_URL}/api/sessions/${roomCode}/info`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
 
@@ -106,7 +110,7 @@ export default function GuestRoom() {
 
   const loadFiles = async (enteredPin) => {
     try {
-      const res = await fetch(`http://localhost:5000/api/sessions/${roomCode}/files`, {
+      const res = await fetch(`${BACKEND_URL}/api/sessions/${roomCode}/files`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pin: enteredPin }),
@@ -135,7 +139,7 @@ export default function GuestRoom() {
   const toggleFullscreen = () => {
     if (videoContainerRef.current) {
       if (!document.fullscreenElement) {
-        videoContainerRef.current.requestFullscreen().catch(err => alert(err.message));
+        videoContainerRef.current.requestFullscreen().catch((err) => alert(err.message));
       } else {
         document.exitFullscreen();
       }
@@ -243,7 +247,7 @@ export default function GuestRoom() {
           </div>
         ) : (
           <>
-            {/* Live Screen Video Element with Edge-to-Edge Fullscreen */}
+            {/* Live Screen Video Element with Fullscreen */}
             <div 
               ref={videoContainerRef}
               className={`bg-black rounded-2xl overflow-hidden border border-slate-800 shadow-xl relative ${hasLiveScreen ? 'flex flex-col' : 'hidden'}`}
