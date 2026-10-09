@@ -46,7 +46,7 @@ export default function GuestRoom() {
   };
 
   const initWebRTC = (name) => {
-    socketRef.current = io('http://localhost:5000');
+    const socket = io('https://instant-hub-server.onrender.com');
     socketRef.current.emit('join-room', { roomCode, isHost: false, guestName: name || 'Participant' });
 
     socketRef.current.on('kicked-out', () => {
@@ -92,7 +92,7 @@ export default function GuestRoom() {
   const fetchSessionInfo = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`http://localhost:5000/api/sessions/${roomCode}/info`);
+      const res = await fetch(`https://instant-hub-server.onrender.com/api/sessions/${sessionCode}/files`)
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
 
