@@ -27,7 +27,7 @@ export default function CreateSession({ onSessionCreated }) {
         onSessionCreated(data);
       }
     } catch (err) {
-      alert('Unable to connect to server. Please check port 5000.');
+      alert('Unable to connect to server. Please check your internet connection.');
     } finally {
       setLoading(false);
     }
