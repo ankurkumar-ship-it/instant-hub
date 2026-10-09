@@ -27,7 +27,7 @@ export default function StandeeCard({ sessionData, onReset }) {
     // Initial fetch of files
     fetchFiles();
 
-    socketRef.current = io('http://localhost:5000');
+    const socket = io('https://instant-hub-server.onrender.com');
     socketRef.current.emit('join-room', { roomCode: sessionData.roomCode, isHost: true });
 
     socketRef.current.on('participants-update', (list) => {
@@ -75,7 +75,7 @@ export default function StandeeCard({ sessionData, onReset }) {
 
   const fetchFiles = async () => {
     try {
-      const res = await fetch(`http://localhost:5000/api/sessions/${sessionData.roomCode}/files`, {
+      const res = await fetch('https://instant-hub-server.onrender.com/api/sessions/...')/files`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pin: sessionData.pin }),
