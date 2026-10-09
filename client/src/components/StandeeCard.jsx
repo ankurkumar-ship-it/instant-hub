@@ -6,6 +6,8 @@ import {
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 
+const BACKEND_URL = 'https://instant-hub-server.onrender.com';
+
 const rtcConfig = {
   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
 };
@@ -24,17 +26,18 @@ export default function StandeeCard({ sessionData, onReset }) {
   const peersRef = useRef({});
 
   useEffect(() => {
-    // Initial fetch of files
     fetchFiles();
 
-    const socket = io('https://instant-hub-server.onrender.com');
-    socketRef.current.emit('join-room', { roomCode: sessionData.roomCode, isHost: true });
+    const socket = io(BACKEND_URL);
+    socketRef.current = socket;
 
-    socketRef.current.on('participants-update', (list) => {
+    socket.emit('join-room', { roomCode: sessionData.roomCode, isHost: true });
+
+    socket.on('participants-update', (list) => {
       setParticipants(list);
     });
 
-    socketRef.current.on('guest-joined', async ({ guestId }) => {
+    socket.on('guest-joined', async ({ guestId }) => {
       if (!streamRef.current) return;
       const peer = new RTCPeerConnection(rtcConfig);
       peersRef.current[guestId] = peer;
@@ -44,24 +47,24 @@ export default function StandeeCard({ sessionData, onReset }) {
       });
 
       peer.onicecandidate = (event) => {
-        if (event.candidate) {
+        if (event.candidate && socketRef.current) {
           socketRef.current.emit('ice-candidate', { targetId: guestId, candidate: event.candidate });
         }
       };
 
       const offer = await peer.createOffer();
       await peer.setLocalDescription(offer);
-      socketRef.current.emit('webrtc-offer', { guestId, offer });
+      socket.emit('webrtc-offer', { guestId, offer });
     });
 
-    socketRef.current.on('webrtc-answer', async ({ guestId, answer }) => {
+    socket.on('webrtc-answer', async ({ guestId, answer }) => {
       const peer = peersRef.current[guestId];
       if (peer) {
         await peer.setRemoteDescription(new RTCSessionDescription(answer));
       }
     });
 
-    socketRef.current.on('ice-candidate', async ({ candidate }) => {
+    socket.on('ice-candidate', async ({ candidate }) => {
       Object.values(peersRef.current).forEach((p) => {
         if (p && candidate) p.addIceCandidate(new RTCIceCandidate(candidate));
       });
@@ -75,7 +78,7 @@ export default function StandeeCard({ sessionData, onReset }) {
 
   const fetchFiles = async () => {
     try {
-      const res = await fetch('https://instant-hub-server.onrender.com/api/sessions/...')/files`, {
+      const res = await fetch(`${BACKEND_URL}/api/sessions/${sessionData.roomCode}/files`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pin: sessionData.pin }),
@@ -83,7 +86,7 @@ export default function StandeeCard({ sessionData, onReset }) {
       const data = await res.json();
       if (data.files) setUploadedFiles(data.files);
     } catch (e) {
-      console.error(e);
+      console.error('File fetch error:', e);
     }
   };
 
@@ -137,7 +140,7 @@ export default function StandeeCard({ sessionData, onReset }) {
     }
 
     try {
-      const res = await fetch(`http://localhost:5000/api/sessions/${sessionData.roomCode}/upload`, {
+      const res = await fetch(`${BACKEND_URL}/api/sessions/${sessionData.roomCode}/upload`, {
         method: 'POST',
         body: formData,
       });
