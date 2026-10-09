@@ -12,7 +12,7 @@ export default function CreateSession({ onSessionCreated }) {
     setLoading(true);
 
     try {
-      const response = await fetch('http://localhost:5000/api/sessions/create', {
+      const response = await fetch('https://instant-hub-server.onrender.com/api/sessions/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
