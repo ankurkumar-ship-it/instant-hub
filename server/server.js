@@ -21,6 +21,7 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
+// Uploads directory configuration
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
@@ -41,7 +42,17 @@ const generatePin = customAlphabet('0123456789', 4);
 
 const sessions = new Map();
 const sessionFiles = new Map();
-const roomParticipants = new Map(); // roomCode -> Map(socketId -> { name, socketId })
+const roomParticipants = new Map();
+
+// Helper to determine server base URL dynamically
+const getBaseUrl = (req) => {
+  return `${req.protocol}://${req.get('host')}`;
+};
+
+// Root Health Check Route
+app.get('/', (req, res) => {
+  res.send('Instant Hub Server is running live!');
+});
 
 // Create Session API
 app.post('/api/sessions/create', (req, res) => {
@@ -71,7 +82,7 @@ app.post('/api/sessions/create', (req, res) => {
     hostSecret,
     pin,
     expiresAt,
-    shareUrl: `http://localhost:5173/room/${roomCode}`
+    shareUrl: `/room/${roomCode}`
   });
 });
 
@@ -99,11 +110,12 @@ app.post('/api/sessions/:roomCode/upload', upload.array('files', 20), (req, res)
   const session = sessions.get(roomCode);
   if (!session) return res.status(404).json({ error: 'Session not found' });
 
+  const baseUrl = getBaseUrl(req);
   const uploaded = (req.files || []).map(file => ({
     id: nanoid(8),
     originalName: file.originalname,
     fileName: file.filename,
-    url: `http://localhost:5000/uploads/${file.filename}`,
+    url: `${baseUrl}/uploads/${file.filename}`,
     type: file.mimetype.startsWith('video/') ? 'video' : 'image',
     uploadedAt: new Date()
   }));
@@ -144,7 +156,6 @@ io.on('connection', (socket) => {
         roomParticipants.set(roomCode, participants);
       }
 
-      // Check agar ye name pehle se list me hai to purani duplicate entry delete karein
       for (const [sId, p] of participants.entries()) {
         if (p.name.toLowerCase() === name.toLowerCase()) {
           participants.delete(sId);
@@ -153,11 +164,8 @@ io.on('connection', (socket) => {
 
       participants.set(socket.id, { id: socket.id, name });
 
-      // Clean unique list bhejein
       const list = Array.from(participants.values());
       io.to(roomCode).emit('participants-update', list);
-
-      // Trigger WebRTC offer from host
       socket.to(roomCode).emit('guest-joined', { guestId: socket.id, guestName: name });
     }
   });
@@ -200,5 +208,5 @@ io.on('connection', (socket) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Backend server running on http://localhost:${PORT}`);
+  console.log(`Backend server running on port ${PORT}`);
 });
