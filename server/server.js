@@ -33,6 +33,12 @@ app.use('/uploads', express.static(uploadDir, {
   }
 }));
 
+// React Frontend build (dist folder) static serving
+const distPath = path.join(__dirname, 'dist');
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+}
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => {
@@ -53,11 +59,6 @@ const roomParticipants = new Map();
 const getBaseUrl = (req) => {
   return `${req.protocol}://${req.get('host')}`;
 };
-
-// Root Health Check Route
-app.get('/', (req, res) => {
-  res.send('Instant Hub Server is running live!');
-});
 
 // Create Session API
 app.post('/api/sessions/create', (req, res) => {
@@ -87,7 +88,8 @@ app.post('/api/sessions/create', (req, res) => {
     hostSecret,
     pin,
     expiresAt,
-    shareUrl: `https://reliable-crostata-0193c7.netlify.app/room/${roomCode}`
+    // Seedhe Render ka direct share link
+    shareUrl: `https://instant-hub-server.onrender.com/room/${roomCode}`
   });
 });
 
@@ -210,6 +212,16 @@ io.on('connection', (socket) => {
       }
     }
   });
+});
+
+// React Single Page App (SPA) fallback - Kisi bhi web route par React UI serve karega
+app.get('*', (req, res) => {
+  const indexPath = path.join(distPath, 'index.html');
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    res.send('Instant Hub Server is running live! (Build files upload hone ke baad UI yahan dikhega)');
+  }
 });
 
 server.listen(PORT, () => {
