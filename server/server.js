@@ -21,12 +21,17 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-// Uploads directory configuration
+// Uploads directory configuration with CORS & Cross-Origin-Resource-Policy headers
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
-app.use('/uploads', express.static(uploadDir));
+app.use('/uploads', express.static(uploadDir, {
+  setHeaders: (res) => {
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Cross-Origin-Resource-Policy', 'cross-origin');
+  }
+}));
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
@@ -82,7 +87,7 @@ app.post('/api/sessions/create', (req, res) => {
     hostSecret,
     pin,
     expiresAt,
-    shareUrl: `/room/${roomCode}`
+    shareUrl: `https://reliable-crostata-0193c7.netlify.app/room/${roomCode}`
   });
 });
 
