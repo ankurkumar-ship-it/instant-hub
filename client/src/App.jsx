@@ -14,6 +14,7 @@ function HostHome() {
       ) : (
         <StandeeCard
           sessionData={activeSession}
+          session={activeSession}
           onReset={() => setActiveSession(null)}
         />
       )}
