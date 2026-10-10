@@ -11,12 +11,15 @@ export default function CreateSession({ onSessionCreated }) {
     e.preventDefault();
     setLoading(true);
 
+    const sessionTitle = title.trim() || 'Live Collaboration Hub';
+
     try {
-      const response = await fetch('https://instant-hub-server.onrender.com/api/sessions/create', {
+      // Dynamic origin use karenge taaki localhost aur Render dono jagah bina issue chale
+      const response = await fetch('/api/sessions/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          title: title || 'Live Collaboration Hub',
+          title: sessionTitle,
           durationHours: Number(duration),
           requirePin,
         }),
@@ -24,10 +27,20 @@ export default function CreateSession({ onSessionCreated }) {
 
       const data = await response.json();
       if (data.success) {
-        onSessionCreated(data);
+        // StandeeCard ko roomCode, title aur code dono fields ensure karke bhejenge
+        onSessionCreated({
+          ...data,
+          title: sessionTitle,
+          code: data.roomCode,
+          roomCode: data.roomCode,
+          shareUrl: data.shareUrl || `${window.location.origin}/room/${data.roomCode}`
+        });
+      } else {
+        alert(data.error || 'Session create karne me dikkat aayi.');
       }
     } catch (err) {
-      alert('Unable to connect to server. Please check your internet connection.');
+      console.error('Session creation error:', err);
+      alert('Unable to connect to server. Please check your connection.');
     } finally {
       setLoading(false);
     }
