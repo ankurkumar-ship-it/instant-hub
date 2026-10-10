@@ -7,9 +7,15 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { AccessToken } from 'livekit-server-sdk';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// LiveKit Cloud Credentials
+const LIVEKIT_URL = 'wss://instant-hub-br7tau7z.livekit.cloud';
+const LIVEKIT_API_KEY = 'APIluAXhXfvRoZZa';
+const LIVEKIT_API_SECRET = 'hyt8ssdexbb1v0uZ15OVPeCApbSSkzSICmZcbqh2kdd';
 
 const app = express();
 const server = http.createServer(app);
@@ -21,7 +27,7 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-// Uploads directory configuration with CORS & Cross-Origin-Resource-Policy headers
+// Uploads directory configuration with CORS headers
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
@@ -88,9 +94,36 @@ app.post('/api/sessions/create', (req, res) => {
     hostSecret,
     pin,
     expiresAt,
-    // Seedhe Render ka direct share link
     shareUrl: `https://instant-hub-server.onrender.com/room/${roomCode}`
   });
+});
+
+// LiveKit Token Generator API (Host & Guests ke liye)
+app.post('/api/livekit/token', async (req, res) => {
+  try {
+    const { roomCode, participantName, isHost } = req.body;
+    if (!roomCode || !participantName) {
+      return res.status(400).json({ error: 'roomCode aur participantName zaroori hain' });
+    }
+
+    const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+      identity: participantName + '-' + nanoid(4),
+      name: participantName
+    });
+
+    at.addGrant({
+      roomJoin: true,
+      room: roomCode.toLowerCase(),
+      canPublish: Boolean(isHost),
+      canSubscribe: true
+    });
+
+    const token = await at.toJwt();
+    res.json({ token, serverUrl: LIVEKIT_URL });
+  } catch (err) {
+    console.error('LiveKit Token Error:', err);
+    res.status(500).json({ error: 'Token generate nahi ho paya' });
+  }
 });
 
 // Info API
@@ -146,7 +179,7 @@ app.post('/api/sessions/:roomCode/files', (req, res) => {
   res.json({ success: true, files });
 });
 
-// Socket.io WebRTC & Live Participant Hub
+// Socket.io Participant Management
 io.on('connection', (socket) => {
   socket.on('join-room', ({ roomCode, isHost, guestName }) => {
     socket.join(roomCode);
@@ -186,22 +219,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('webrtc-offer', ({ guestId, offer }) => {
-    io.to(guestId).emit('webrtc-offer', { hostId: socket.id, offer });
-  });
-
-  socket.on('webrtc-answer', ({ hostId, answer }) => {
-    io.to(hostId).emit('webrtc-answer', { guestId: socket.id, answer });
-  });
-
-  socket.on('ice-candidate', ({ targetId, candidate }) => {
-    io.to(targetId).emit('ice-candidate', { candidate });
-  });
-
-  socket.on('screen-stopped', ({ roomCode }) => {
-    socket.to(roomCode).emit('screen-stopped');
-  });
-
   socket.on('disconnect', () => {
     const { roomCode, isHost } = socket.data;
     if (roomCode && !isHost) {
@@ -214,13 +231,13 @@ io.on('connection', (socket) => {
   });
 });
 
-// React Single Page App (SPA) fallback - Kisi bhi web route par React UI serve karega
+// React Single Page App (SPA) fallback
 app.get('*', (req, res) => {
   const indexPath = path.join(distPath, 'index.html');
   if (fs.existsSync(indexPath)) {
     res.sendFile(indexPath);
   } else {
-    res.send('Instant Hub Server is running live! (Build files upload hone ke baad UI yahan dikhega)');
+    res.send('Instant Hub Server is running live!');
   }
 });
 
