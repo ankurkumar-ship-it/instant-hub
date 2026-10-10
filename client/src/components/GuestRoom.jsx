@@ -1,386 +1,398 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
+import { Room, RoomEvent, Track } from 'livekit-client';
 import { 
-  Lock, Image as ImageIcon, Download, RefreshCw, 
-  Maximize2, RotateCw, X, User, AlertOctagon, LogOut 
+  Maximize2, 
+  Minimize2, 
+  RefreshCw, 
+  LogOut, 
+  Image as ImageIcon, 
+  Video, 
+  Download, 
+  Lock, 
+  Radio, 
+  Eye 
 } from 'lucide-react';
-import { io } from 'socket.io-client';
-
-const BACKEND_URL = 'https://instant-hub-server.onrender.com';
-
-const rtcConfig = {
-  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-};
 
 export default function GuestRoom() {
   const { roomCode } = useParams();
-  const [sessionInfo, setSessionInfo] = useState(null);
-  const [guestName, setGuestName] = useState('');
+  const navigate = useNavigate();
+
+  // State management
+  const [guestName, setGuestName] = useState(() => localStorage.getItem('hub_guest_name') || '');
+  const [isJoined, setIsJoined] = useState(false);
   const [pin, setPin] = useState('');
-  const [isUnlocked, setIsUnlocked] = useState(false);
+  const [sessionInfo, setSessionInfo] = useState(null);
   const [files, setFiles] = useState([]);
+  const [errorMsg, setErrorMsg] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  // LiveKit Stream & Fullscreen states
   const [hasLiveScreen, setHasLiveScreen] = useState(false);
-  const [kicked, setKicked] = useState(false);
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [isLandscapeFs, setIsLandscapeFs] = useState(false);
 
-  // Lightbox & Rotate State
-  const [selectedMedia, setSelectedMedia] = useState(null);
-  const [rotation, setRotation] = useState(0);
-
+  // References
   const videoRef = useRef(null);
-  const videoContainerRef = useRef(null);
-  const socketRef = useRef(null);
-  const peerRef = useRef(null);
+  const roomRef = useRef(null);
+  const currentTrackRef = useRef(null);
 
-  useEffect(() => {
-    fetchSessionInfo();
-    return () => {
-      if (socketRef.current) socketRef.current.disconnect();
-      if (peerRef.current) peerRef.current.close();
-    };
-  }, [roomCode]);
-
-  const handleLeaveRoom = () => {
-    if (socketRef.current) socketRef.current.disconnect();
-    if (peerRef.current) peerRef.current.close();
-    window.location.href = '/';
-  };
-
-  const initWebRTC = (name) => {
-    const socket = io(BACKEND_URL);
-    socketRef.current = socket;
-
-    socket.emit('join-room', { roomCode, isHost: false, guestName: name || 'Participant' });
-
-    socket.on('kicked-out', () => {
-      setKicked(true);
-      if (peerRef.current) peerRef.current.close();
-      if (videoRef.current) videoRef.current.srcObject = null;
-    });
-
-    socket.on('webrtc-offer', async ({ hostId, offer }) => {
-      peerRef.current = new RTCPeerConnection(rtcConfig);
-
-      peerRef.current.ontrack = (event) => {
-        if (videoRef.current) {
-          videoRef.current.srcObject = event.streams[0];
-          setHasLiveScreen(true);
-        }
-      };
-
-      peerRef.current.onicecandidate = (event) => {
-        if (event.candidate && socketRef.current) {
-          socketRef.current.emit('ice-candidate', { targetId: hostId, candidate: event.candidate });
-        }
-      };
-
-      await peerRef.current.setRemoteDescription(new RTCSessionDescription(offer));
-      const answer = await peerRef.current.createAnswer();
-      await peerRef.current.setLocalDescription(answer);
-      socket.emit('webrtc-answer', { hostId, answer });
-    });
-
-    socket.on('ice-candidate', async ({ candidate }) => {
-      if (peerRef.current && candidate) {
-        await peerRef.current.addIceCandidate(new RTCIceCandidate(candidate));
-      }
-    });
-
-    socket.on('screen-stopped', () => {
-      if (videoRef.current) videoRef.current.srcObject = null;
-      setHasLiveScreen(false);
-    });
-  };
-
-  const fetchSessionInfo = async () => {
-    setLoading(true);
+  // Fetch Room Information on load
+  const fetchRoomInfo = async () => {
     try {
-      const res = await fetch(`${BACKEND_URL}/api/sessions/${roomCode}/info`);
+      const res = await fetch(`/api/sessions/${roomCode}/info`);
+      if (res.status === 404) throw new Error('Room nahi mila ya galat code hai.');
+      if (res.status === 410) throw new Error('Session expire ho chuka hai.');
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-
       setSessionInfo(data);
     } catch (err) {
-      setError(err.message || 'Error loading session');
+      setErrorMsg(err.message);
+    }
+  };
+
+  useEffect(() => {
+    fetchRoomInfo();
+  }, [roomCode]);
+
+  // Fetch Session Files
+  const fetchFiles = async (pinCode = pin) => {
+    try {
+      const res = await fetch(`/api/sessions/${roomCode}/files`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin: pinCode })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setFiles(data.files || []);
+      }
+    } catch (err) {
+      console.error('Files fetch error:', err);
+    }
+  };
+
+  // Join Room & Connect to LiveKit
+  const handleJoin = async (e) => {
+    e?.preventDefault();
+    if (!guestName.trim()) {
+      setErrorMsg('Kripya apna naam darj karein');
+      return;
+    }
+    setErrorMsg('');
+    setLoading(true);
+
+    try {
+      // Step 1: Verify PIN if protected
+      if (sessionInfo?.isProtected) {
+        const testRes = await fetch(`/api/sessions/${roomCode}/files`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pin })
+        });
+        if (testRes.status === 401) {
+          throw new Error('Galat PIN code darj kiya hai.');
+        }
+      }
+
+      localStorage.setItem('hub_guest_name', guestName.trim());
+      await fetchFiles(pin);
+
+      // Step 2: Fetch LiveKit Guest Token
+      const tokenRes = await fetch('/api/livekit/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          roomCode,
+          participantName: guestName.trim(),
+          isHost: false
+        })
+      });
+
+      const tokenData = await tokenRes.json();
+      if (!tokenData.token || !tokenData.serverUrl) {
+        throw new Error('Live stream connect nahi ho payi.');
+      }
+
+      // Step 3: Connect to LiveKit Room
+      const room = new Room({
+        adaptiveStream: true,
+        dynacast: true
+      });
+
+      // Handle subscribed track (Host's screen)
+      room.on(RoomEvent.TrackSubscribed, (track, publication) => {
+        if (track.kind === Track.Kind.Video) {
+          currentTrackRef.current = track;
+          if (videoRef.current) {
+            track.attach(videoRef.current);
+          }
+          setHasLiveScreen(true);
+        }
+      });
+
+      // Handle unsubscribed track
+      room.on(RoomEvent.TrackUnsubscribed, (track) => {
+        if (track.kind === Track.Kind.Video) {
+          track.detach();
+          currentTrackRef.current = null;
+          setHasLiveScreen(false);
+          setIsLandscapeFs(false);
+        }
+      });
+
+      await room.connect(tokenData.serverUrl, tokenData.token);
+      roomRef.current = room;
+
+      // Check if host is already sharing screen
+      for (const participant of room.remoteParticipants.values()) {
+        for (const pub of participant.trackPublications.values()) {
+          if (pub.track && pub.track.kind === Track.Kind.Video) {
+            currentTrackRef.current = pub.track;
+            if (videoRef.current) {
+              pub.track.attach(videoRef.current);
+            }
+            setHasLiveScreen(true);
+          }
+        }
+      }
+
+      setIsJoined(true);
+    } catch (err) {
+      setErrorMsg(err.message || 'Room join karne me error aaya');
     } finally {
       setLoading(false);
     }
   };
 
-  const loadFiles = async (enteredPin) => {
-    try {
-      const res = await fetch(`${BACKEND_URL}/api/sessions/${roomCode}/files`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pin: enteredPin }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-
-      setFiles(data.files);
-      setIsUnlocked(true);
-      setError('');
-      initWebRTC(guestName);
-    } catch (err) {
-      setError(err.message || 'Incorrect PIN code');
+  // Re-attach video if element mounts/updates
+  useEffect(() => {
+    if (hasLiveScreen && currentTrackRef.current && videoRef.current) {
+      currentTrackRef.current.attach(videoRef.current);
     }
+  }, [hasLiveScreen, isLandscapeFs]);
+
+  // Clean up on leave
+  const handleExit = () => {
+    if (roomRef.current) {
+      roomRef.current.disconnect();
+      roomRef.current = null;
+    }
+    setIsJoined(false);
+    navigate('/');
   };
 
-  const handleJoinSubmit = (e) => {
-    e.preventDefault();
-    if (!guestName.trim()) {
-      setError('Please enter your name');
-      return;
-    }
-    loadFiles(pin);
-  };
-
-  const toggleFullscreen = async () => {
-    if (videoContainerRef.current) {
-      if (!document.fullscreenElement) {
-        try {
-          await videoContainerRef.current.requestFullscreen();
-          // Mobile screen ko horizontal (landscape) rotate karne ke liye
-          if (window.screen.orientation && window.screen.orientation.lock) {
-            await window.screen.orientation.lock('landscape').catch(() => {});
-          }
-        } catch (err) {
-          console.error(err);
-        }
-      } else {
-        if (document.exitFullscreen) {
-          await document.exitFullscreen();
-        }
-        if (window.screen.orientation && window.screen.orientation.unlock) {
-          window.screen.orientation.unlock();
-        }
+  useEffect(() => {
+    return () => {
+      if (roomRef.current) {
+        roomRef.current.disconnect();
       }
-    }
+    };
+  }, []);
+
+  // Toggle Landscape Fullscreen
+  const toggleFullscreen = () => {
+    setIsLandscapeFs(prev => !prev);
   };
 
-  if (kicked) {
+  // Join Screen (Entry gate)
+  if (!isJoined) {
     return (
-      <div className="flex h-screen items-center justify-center p-4 bg-slate-50">
-        <div className="bg-white p-8 rounded-3xl border border-red-200 text-center max-w-sm shadow-xl">
-          <AlertOctagon size={44} className="mx-auto text-red-600 mb-3" />
-          <h2 className="text-xl font-bold text-slate-800">Removed from Room</h2>
-          <p className="text-xs text-slate-500 mt-2">The host has removed you from this workspace session.</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (loading) {
-    return <div className="flex h-screen items-center justify-center text-slate-500 font-semibold">Connecting to Hub...</div>;
-  }
-
-  if (error && !sessionInfo) {
-    return (
-      <div className="flex h-screen items-center justify-center p-4 bg-slate-50">
-        <div className="bg-white p-6 rounded-2xl shadow border border-red-100 text-center max-w-sm">
-          <p className="text-red-600 font-semibold">{error}</p>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="min-h-screen bg-slate-50 p-4 md:p-8">
-      <div className="max-w-4xl mx-auto space-y-6">
-        {/* Header */}
-        <div className="flex flex-wrap justify-between items-center gap-3 bg-white p-5 md:p-6 rounded-2xl shadow-sm border border-slate-200">
-          <div>
-            <span className="text-[11px] uppercase tracking-wider font-extrabold text-indigo-600">Live Workspace Hub</span>
-            <h1 className="text-xl md:text-2xl font-black text-slate-900 mt-0.5 tracking-tight">{sessionInfo?.title}</h1>
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4">
+        <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 space-y-6 shadow-2xl">
+          <div className="text-center space-y-2">
+            <span className="text-xs font-bold uppercase tracking-wider text-indigo-400 bg-indigo-950/60 px-3 py-1 rounded-full border border-indigo-800/40">
+              Live Workspace Hub
+            </span>
+            <h1 className="text-2xl font-black text-white">{sessionInfo?.title || 'Connect to Session'}</h1>
+            <p className="text-xs text-slate-400">Room Code: <span className="font-mono text-indigo-400 font-bold">{roomCode?.toUpperCase()}</span></p>
           </div>
-          
-          {isUnlocked && (
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => loadFiles(pin)}
-                className="flex items-center gap-1.5 text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-3.5 py-2 rounded-xl font-semibold transition"
-              >
-                <RefreshCw size={14} /> Refresh
-              </button>
-              <button
-                onClick={handleLeaveRoom}
-                className="flex items-center gap-1.5 text-xs bg-red-50 hover:bg-red-600 text-red-600 hover:text-white px-3.5 py-2 rounded-xl font-semibold border border-red-200 hover:border-red-600 transition duration-200"
-              >
-                <LogOut size={14} /> Exit
-              </button>
+
+          {errorMsg && (
+            <div className="p-3 bg-red-500/10 border border-red-500/20 text-red-400 text-xs rounded-xl text-center">
+              {errorMsg}
             </div>
           )}
-        </div>
 
-        {/* Join Screen: Enter Name & PIN */}
-        {!isUnlocked ? (
-          <div className="max-w-sm mx-auto bg-white p-7 rounded-3xl border border-slate-200 shadow-md text-center">
-            <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-3">
-              <User size={22} />
+          <form onSubmit={handleJoin} className="space-y-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1.5">Aapka Naam</label>
+              <input
+                type="text"
+                required
+                value={guestName}
+                onChange={(e) => setGuestName(e.target.value)}
+                placeholder="Ex. Rahul Kumar"
+                className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500"
+              />
             </div>
-            <h2 className="text-xl font-bold text-slate-800">Join Workspace</h2>
-            <p className="text-xs text-slate-400 mt-1 mb-5">Provide your identity to access live media</p>
-            
-            <form onSubmit={handleJoinSubmit} className="space-y-3.5 text-left">
+
+            {sessionInfo?.isProtected && (
               <div>
-                <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">Your Name</label>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5 flex items-center gap-1.5">
+                  <Lock size={12} className="text-amber-400" /> Room PIN
+                </label>
                 <input
-                  type="text"
-                  placeholder="e.g. John Doe"
-                  value={guestName}
-                  onChange={(e) => setGuestName(e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-600 text-sm font-medium"
+                  type="password"
+                  required
+                  value={pin}
+                  onChange={(e) => setPin(e.target.value)}
+                  placeholder="4-digit PIN"
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500 tracking-widest text-center"
                 />
               </div>
+            )}
 
-              {sessionInfo?.isProtected && (
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">4-Digit Security PIN</label>
-                  <input
-                    type="text"
-                    maxLength="4"
-                    placeholder="0000"
-                    value={pin}
-                    onChange={(e) => setPin(e.target.value)}
-                    className="w-full text-center tracking-[0.4em] text-xl font-mono py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-600 font-bold"
-                  />
-                </div>
-              )}
-
-              {error && <p className="text-xs text-red-500 font-medium">{error}</p>}
-
-              <button
-                type="submit"
-                className="w-full mt-2 bg-indigo-600 text-white font-semibold py-3 rounded-xl hover:bg-indigo-700 transition shadow-md shadow-indigo-100"
-              >
-                Enter Hub
-              </button>
-            </form>
-          </div>
-        ) : (
-          <>
-            {/* Live Screen Video Element with Landscape Fullscreen */}
-            <div 
-              ref={videoContainerRef}
-              className={`bg-black rounded-2xl overflow-hidden border border-slate-800 shadow-xl relative w-full ${
-                hasLiveScreen ? 'flex flex-col' : 'hidden'
-              } [&:fullscreen]:rounded-none [&:fullscreen]:border-none [&:fullscreen]:w-screen [&:fullscreen]:h-screen`}
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3.5 rounded-xl text-sm transition shadow-lg shadow-indigo-600/30 disabled:opacity-50"
             >
-              {/* Header Bar */}
-              <div className="bg-slate-900/90 px-4 py-2.5 flex items-center justify-between text-xs text-slate-200 border-b border-slate-800 shrink-0">
-                <span className="flex items-center gap-2 font-bold">
+              {loading ? 'Connecting...' : 'Join Workspace'}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // Active Workspace Room
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 p-3 sm:p-6 pb-20">
+      <div className="max-w-4xl mx-auto space-y-6">
+        {/* Top Header */}
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex items-center justify-between shadow-lg">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400">Connected</span>
+            </div>
+            <h2 className="text-lg font-extrabold text-white">{sessionInfo?.title || 'Live Workspace'}</h2>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => fetchFiles()}
+              className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl transition"
+              title="Refresh Files"
+            >
+              <RefreshCw size={16} />
+            </button>
+            <button
+              onClick={handleExit}
+              className="flex items-center gap-1.5 px-3 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 rounded-xl text-xs font-semibold transition"
+            >
+              <LogOut size={14} /> Exit
+            </button>
+          </div>
+        </div>
+
+        {/* Live Host Screen Broadcast Section */}
+        {hasLiveScreen ? (
+          <div
+            className={
+              isLandscapeFs
+                ? "fixed inset-0 z-50 bg-black flex items-center justify-center overflow-hidden w-screen h-screen"
+                : "bg-black rounded-3xl overflow-hidden border border-slate-800 shadow-2xl relative w-full flex flex-col"
+            }
+          >
+            {/* Screen Wrapper with Force Landscape CSS Transform */}
+            <div
+              className={
+                isLandscapeFs
+                  ? "w-[100vh] h-[100vw] rotate-90 flex flex-col justify-center items-center relative"
+                  : "w-full flex flex-col"
+              }
+            >
+              {/* Header / Controls */}
+              <div className="w-full bg-slate-900/90 px-4 py-2.5 flex items-center justify-between text-xs text-slate-200 border-b border-slate-800 shrink-0 z-10">
+                <span className="flex items-center gap-2 font-bold text-red-400">
                   <span className="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse" />
                   Live Host Screen Broadcast
                 </span>
                 <button
                   onClick={toggleFullscreen}
-                  className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 px-3 py-1.5 rounded-lg text-xs font-semibold text-white transition"
+                  className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded-lg text-xs font-semibold text-white transition shadow"
                 >
-                  <Maximize2 size={14} /> Fullscreen
+                  {isLandscapeFs ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                  {isLandscapeFs ? 'Exit Fullscreen' : 'Fullscreen'}
                 </button>
               </div>
-              
+
               {/* Video Element */}
-              <div className="w-full flex-1 flex items-center justify-center bg-black h-full">
+              <div className="w-full flex-1 flex items-center justify-center bg-black overflow-hidden">
                 <video
                   ref={videoRef}
                   autoPlay
                   playsInline
                   muted
-                  className="w-full h-full object-contain max-h-[75vh] [&:fullscreen]:max-h-none"
+                  className={
+                    isLandscapeFs
+                      ? "w-full h-full object-contain"
+                      : "w-full h-auto max-h-[75vh] object-contain bg-black"
+                  }
                 />
               </div>
-            </div>
-
-            {/* Media Gallery Section */}
-            <div>
-              <h2 className="text-sm font-extrabold text-slate-800 mb-3 flex items-center gap-2 uppercase tracking-wider">
-                <ImageIcon size={18} className="text-indigo-600" /> Uploaded Assets & Media
-              </h2>
-              {files.length === 0 ? (
-                <div className="bg-white rounded-2xl p-10 text-center border border-slate-200">
-                  <ImageIcon className="mx-auto text-slate-300 mb-2" size={36} />
-                  <p className="text-slate-600 text-sm font-medium">No assets uploaded yet.</p>
-                </div>
-              ) : (
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-                  {files.map((file) => (
-                    <div 
-                      key={file.id} 
-                      onClick={() => { setSelectedMedia(file); setRotation(0); }}
-                      className="group relative bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm cursor-pointer"
-                    >
-                      {file.type === 'image' ? (
-                        <img src={file.url} alt={file.originalName} className="w-full h-44 object-cover" />
-                      ) : (
-                        <video src={file.url} className="w-full h-44 object-cover bg-black" />
-                      )}
-                      <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-xs font-semibold transition">
-                        Open Preview
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* Lightbox Modal with 90° Rotate & Download */}
-      {selectedMedia && (
-        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="relative max-w-3xl w-full bg-slate-900 rounded-2xl overflow-hidden shadow-2xl p-4 flex flex-col items-center">
-            <div className="w-full flex justify-between items-center text-white mb-3">
-              <span className="text-xs truncate max-w-[250px] font-medium">{selectedMedia.originalName}</span>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setRotation((r) => (r + 90) % 360)}
-                  className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white transition flex items-center gap-1.5 text-xs font-medium"
-                >
-                  <RotateCw size={14} /> Rotate
-                </button>
-                <a
-                  href={selectedMedia.url}
-                  download
-                  target="_blank"
-                  rel="noreferrer"
-                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white transition"
-                  title="Download"
-                >
-                  <Download size={15} />
-                </a>
-                <button
-                  onClick={() => setSelectedMedia(null)}
-                  className="p-1.5 rounded-lg bg-red-600/80 hover:bg-red-600 text-white transition"
-                  title="Close"
-                >
-                  <X size={16} />
-                </button>
-              </div>
-            </div>
-
-            <div className="w-full h-[65vh] flex items-center justify-center overflow-hidden bg-black/50 rounded-xl">
-              {selectedMedia.type === 'image' ? (
-                <img
-                  src={selectedMedia.url}
-                  alt=""
-                  style={{ transform: `rotate(${rotation}deg)` }}
-                  className="max-h-full max-w-full object-contain transition-transform duration-300"
-                />
-              ) : (
-                <video
-                  src={selectedMedia.url}
-                  controls
-                  style={{ transform: `rotate(${rotation}deg)` }}
-                  className="max-h-full max-w-full object-contain transition-transform duration-300"
-                />
-              )}
             </div>
           </div>
+        ) : (
+          <div className="bg-slate-900 border border-slate-800/80 rounded-3xl p-8 text-center space-y-3">
+            <Radio size={36} className="mx-auto text-indigo-400 animate-pulse" />
+            <h3 className="text-base font-bold text-white">Screen Broadcast Offline</h3>
+            <p className="text-xs text-slate-400 max-w-sm mx-auto">
+              Host ne abhi screen broadcast start nahi kiya hai. Jaise hi host screen share karega, stream yahan automatically live ho jayegi.
+            </p>
+          </div>
+        )}
+
+        {/* Uploaded Assets & Media Section */}
+        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-4 shadow-xl">
+          <div className="flex items-center justify-between">
+            <h3 className="text-base font-bold text-white flex items-center gap-2">
+              <Eye size={18} className="text-indigo-400" />
+              Uploaded Assets & Media
+            </h3>
+            <span className="text-xs text-slate-400">{files.length} items</span>
+          </div>
+
+          {files.length === 0 ? (
+            <div className="py-10 text-center text-slate-500 text-xs">
+              Abhi tak koi assets upload nahi hue hain.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-96 overflow-y-auto pr-1">
+              {files.map((file) => (
+                <div
+                  key={file.id || file.url}
+                  className="p-3 bg-slate-800/70 border border-slate-700/60 rounded-2xl flex items-center justify-between gap-3 hover:bg-slate-800 transition"
+                >
+                  <div className="flex items-center gap-3 overflow-hidden">
+                    <div className="p-2 bg-indigo-500/10 rounded-xl shrink-0">
+                      {file.type === 'video' ? (
+                        <Video size={18} className="text-rose-400" />
+                      ) : (
+                        <ImageIcon size={18} className="text-indigo-400" />
+                      )}
+                    </div>
+                    <span className="text-xs font-medium text-slate-200 truncate">
+                      {file.originalName || file.fileName}
+                    </span>
+                  </div>
+
+                  <a
+                    href={file.url}
+                    download
+                    target="_blank"
+                    rel="noreferrer"
+                    className="p-2 bg-slate-700 hover:bg-indigo-600 text-slate-200 hover:text-white rounded-xl transition shrink-0"
+                    title="Download / View"
+                  >
+                    <Download size={15} />
+                  </a>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
-      )}
+      </div>
     </div>
   );
 }

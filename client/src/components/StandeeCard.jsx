@@ -1,382 +1,299 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { QRCodeSVG } from 'qrcode.react';
+import React, { useState, useEffect, useRef } from 'react';
+import QRCode from 'react-qr-code';
+import { Room, Track } from 'livekit-client';
 import { 
-  Printer, Copy, Check, ArrowLeft, Upload, CheckCircle2, 
-  Monitor, StopCircle, Users, UserX, RotateCw, X, Download, Eye
+  Share2, 
+  Copy, 
+  Check, 
+  Tv, 
+  Users, 
+  FolderPlus, 
+  FileText, 
+  Image as ImageIcon, 
+  Video, 
+  Trash2, 
+  ShieldAlert 
 } from 'lucide-react';
-import { io } from 'socket.io-client';
 
-const BACKEND_URL = 'https://instant-hub-server.onrender.com';
-
-const rtcConfig = {
-  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-};
-
-export default function StandeeCard({ sessionData, onReset }) {
+export default function StandeeCard({ 
+  session, 
+  files = [], 
+  participants = [], 
+  onUploadFiles, 
+  onKickParticipant 
+}) {
   const [copied, setCopied] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [isSharing, setIsSharing] = useState(false);
-  const [participants, setParticipants] = useState([]);
-  const [uploadedFiles, setUploadedFiles] = useState([]);
-  const [activeMedia, setActiveMedia] = useState(null);
-  const [rotation, setRotation] = useState(0);
+  const [isSharingScreen, setIsSharingScreen] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
 
-  const socketRef = useRef(null);
-  const streamRef = useRef(null);
-  const peersRef = useRef({});
+  // LiveKit Room instance reference
+  const roomRef = useRef(null);
+  const fileInputRef = useRef(null);
 
+  // Clean up LiveKit room on unmount
   useEffect(() => {
-    fetchFiles();
-
-    const socket = io(BACKEND_URL);
-    socketRef.current = socket;
-
-    socket.emit('join-room', { roomCode: sessionData.roomCode, isHost: true });
-
-    socket.on('participants-update', (list) => {
-      setParticipants(list);
-    });
-
-    socket.on('guest-joined', async ({ guestId }) => {
-      if (!streamRef.current) return;
-      const peer = new RTCPeerConnection(rtcConfig);
-      peersRef.current[guestId] = peer;
-
-      streamRef.current.getTracks().forEach((track) => {
-        peer.addTrack(track, streamRef.current);
-      });
-
-      peer.onicecandidate = (event) => {
-        if (event.candidate && socketRef.current) {
-          socketRef.current.emit('ice-candidate', { targetId: guestId, candidate: event.candidate });
-        }
-      };
-
-      const offer = await peer.createOffer();
-      await peer.setLocalDescription(offer);
-      socket.emit('webrtc-offer', { guestId, offer });
-    });
-
-    socket.on('webrtc-answer', async ({ guestId, answer }) => {
-      const peer = peersRef.current[guestId];
-      if (peer) {
-        await peer.setRemoteDescription(new RTCSessionDescription(answer));
-      }
-    });
-
-    socket.on('ice-candidate', async ({ candidate }) => {
-      Object.values(peersRef.current).forEach((p) => {
-        if (p && candidate) p.addIceCandidate(new RTCIceCandidate(candidate));
-      });
-    });
-
     return () => {
-      if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
-      if (socketRef.current) socketRef.current.disconnect();
+      if (roomRef.current) {
+        roomRef.current.disconnect();
+      }
     };
-  }, [sessionData.roomCode]);
+  }, []);
 
-  const fetchFiles = async () => {
+  // Copy share URL handler
+  const handleCopy = () => {
+    if (session?.shareUrl) {
+      navigator.clipboard.writeText(session.shareUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  // LiveKit Screen Share Toggle (50+ participants support)
+  const handleToggleScreenShare = async () => {
+    if (isSharingScreen) {
+      if (roomRef.current) {
+        await roomRef.current.localParticipant.setScreenShareEnabled(false);
+        await roomRef.current.disconnect();
+        roomRef.current = null;
+      }
+      setIsSharingScreen(false);
+      return;
+    }
+
     try {
-      const res = await fetch(`${BACKEND_URL}/api/sessions/${sessionData.roomCode}/files`, {
+      // Step 1: Fetch LiveKit Host Token from backend
+      const res = await fetch('/api/livekit/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pin: sessionData.pin }),
+        body: JSON.stringify({
+          roomCode: session.code || session.roomCode,
+          participantName: 'Host-Presenter',
+          isHost: true
+        })
       });
+
       const data = await res.json();
-      if (data.files) setUploadedFiles(data.files);
-    } catch (e) {
-      console.error('File fetch error:', e);
-    }
-  };
+      if (!data.token || !data.serverUrl) {
+        throw new Error('Token generate nahi ho paya');
+      }
 
-  const kickGuest = (guestId) => {
-    if (socketRef.current) {
-      socketRef.current.emit('kick-participant', { roomCode: sessionData.roomCode, guestId });
-    }
-  };
+      // Step 2: Initialize & connect LiveKit Room
+      const room = new Room({
+        adaptiveStream: true,
+        dynacast: true,
+        publishDefaults: {
+          simulcast: true,
+          screenShareEncoding: {
+            maxBitrate: 1500000,
+            maxFramerate: 24
+          }
+        }
+      });
 
-  const startScreenShare = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
-      streamRef.current = stream;
-      setIsSharing(true);
+      await room.connect(data.serverUrl, data.token);
+      roomRef.current = room;
 
-      stream.getVideoTracks()[0].onended = () => {
-        stopScreenShare();
-      };
+      // Step 3: Trigger screen share with system audio
+      await room.localParticipant.setScreenShareEnabled(true, {
+        audio: true,
+        resolution: { width: 1920, height: 1080, frameRate: 24 }
+      });
+
+      // Handle user stopping screen share via browser's floating bar
+      const tracks = room.localParticipant.getTrackPublications();
+      for (const pub of tracks) {
+        if (pub.source === Track.Source.ScreenShare && pub.track) {
+          pub.track.mediaStreamTrack.onended = async () => {
+            await handleToggleScreenShare();
+          };
+        }
+      }
+
+      setIsSharingScreen(true);
     } catch (err) {
       console.error('Screen sharing error:', err);
-    }
-  };
-
-  const stopScreenShare = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
-    }
-    Object.values(peersRef.current).forEach((p) => p.close());
-    peersRef.current = {};
-    setIsSharing(false);
-    if (socketRef.current) {
-      socketRef.current.emit('screen-stopped', { roomCode: sessionData.roomCode });
-    }
-  };
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(sessionData.shareUrl);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  const handleFileUpload = async (e) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-
-    setUploading(true);
-    const formData = new FormData();
-    for (let i = 0; i < files.length; i++) {
-      formData.append('files', files[i]);
-    }
-
-    try {
-      const res = await fetch(`${BACKEND_URL}/api/sessions/${sessionData.roomCode}/upload`, {
-        method: 'POST',
-        body: formData,
-      });
-      const data = await res.json();
-      if (data.success) {
-        fetchFiles();
+      alert('Screen share shuru nahi ho paya ya cancel kar diya gaya.');
+      if (roomRef.current) {
+        await roomRef.current.disconnect();
+        roomRef.current = null;
       }
-    } catch (err) {
-      alert('Upload failed: Server connection issue');
-    } finally {
-      setUploading(false);
+      setIsSharingScreen(false);
     }
   };
+
+  // Upload handler
+  const handleFileChange = async (e) => {
+    const selectedFiles = e.target.files;
+    if (!selectedFiles || selectedFiles.length === 0) return;
+    setIsUploading(true);
+    try {
+      await onUploadFiles(selectedFiles);
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const roomCode = session?.code || session?.roomCode || '';
+  const shareUrl = session?.shareUrl || `https://instant-hub-server.onrender.com/room/${roomCode}`;
 
   return (
-    <div className="w-full max-w-xl mx-auto space-y-5">
-      {/* Top Controls */}
-      <div className="flex gap-2 print:hidden">
+    <div className="w-full max-w-5xl mx-auto space-y-6">
+      {/* Top Banner & Screen Broadcast Trigger */}
+      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 md:p-8 flex flex-col md:flex-row items-center justify-between gap-6 shadow-2xl">
+        <div className="space-y-2 text-center md:text-left">
+          <div className="inline-flex items-center gap-2 px-3 py-1 bg-indigo-500/10 text-indigo-400 text-xs font-semibold rounded-full border border-indigo-500/20">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            LiveKit High Capacity Hub (50+ Peers)
+          </div>
+          <h2 className="text-2xl md:text-3xl font-extrabold text-white tracking-tight">
+            {session?.title || 'Interactive Hub'}
+          </h2>
+          <p className="text-sm text-slate-400 max-w-md">
+            Scan QR code or use the room code to join instantly with full real-time screen broadcast and asset sync.
+          </p>
+        </div>
+
         <button
-          onClick={onReset}
-          className="p-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 transition"
-          title="Back to Setup"
+          onClick={handleToggleScreenShare}
+          className={`flex items-center gap-2.5 px-6 py-3.5 rounded-2xl font-bold text-sm transition-all shadow-lg ${
+            isSharingScreen
+              ? 'bg-red-500 hover:bg-red-600 text-white shadow-red-500/25 ring-4 ring-red-500/20'
+              : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-indigo-600/30'
+          }`}
         >
-          <ArrowLeft size={18} />
-        </button>
-        <button
-          onClick={() => window.print()}
-          className="flex-1 flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white py-2.5 px-4 rounded-xl font-semibold transition shadow-md shadow-indigo-100"
-        >
-          <Printer size={18} /> Print Standee
-        </button>
-        <button
-          onClick={handleCopy}
-          className="flex items-center gap-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 py-2.5 px-4 rounded-xl font-medium transition"
-        >
-          {copied ? <Check size={18} className="text-emerald-600" /> : <Copy size={18} />}
-          {copied ? 'Copied' : 'Copy URL'}
+          <Tv size={18} />
+          {isSharingScreen ? 'Stop Screen Sharing' : 'Start Sharing My Screen'}
         </button>
       </div>
 
-      {/* Printable Standee Card */}
-      <div className="print-area bg-white border border-slate-200/90 rounded-3xl p-8 text-center shadow-lg">
-        <span className="text-[11px] uppercase tracking-widest font-extrabold px-3 py-1 bg-indigo-50 text-indigo-700 rounded-full">
-          Instant Scan & View
-        </span>
-        
-        <h2 className="text-2xl font-black text-slate-800 mt-4 tracking-tight">
-          {sessionData.title}
-        </h2>
-        <p className="text-xs text-slate-400 mt-1">
-          Scan with any mobile camera to view presentation and assets
-        </p>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        {/* Left Column: QR Code Standee */}
+        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 flex flex-col items-center text-center space-y-5 shadow-xl">
+          <span className="text-xs font-bold uppercase tracking-wider text-indigo-400 bg-indigo-950/60 px-3 py-1 rounded-full border border-indigo-800/40">
+            Instant Scan & View
+          </span>
 
-        <div className="inline-block p-4 bg-slate-50 border border-slate-100 rounded-2xl shadow-inner my-5">
-          <QRCodeSVG
-            value={sessionData.shareUrl}
-            size={200}
-            level="H"
-            includeMargin={true}
-          />
-        </div>
-
-        <div className="pt-4 border-t border-dashed border-slate-200 flex justify-center gap-8">
-          <div>
-            <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Room</p>
-            <p className="text-sm font-extrabold text-slate-900 font-mono tracking-wide">{sessionData.roomCode.toUpperCase()}</p>
+          <div className="p-4 bg-white rounded-2xl shadow-inner flex items-center justify-center">
+            <QRCode value={shareUrl} size={180} />
           </div>
-          {sessionData.pin && (
+
+          <div className="flex items-center gap-4 text-xs text-slate-300 font-mono">
             <div>
-              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">PIN Code</p>
-              <p className="text-sm font-extrabold text-indigo-600 font-mono tracking-wide">{sessionData.pin}</p>
+              <p className="text-slate-500 uppercase text-[10px] tracking-wider">Room</p>
+              <p className="font-bold text-sm text-white">{roomCode.toUpperCase()}</p>
             </div>
-          )}
-        </div>
-
-        <p className="text-[10px] text-slate-400 mt-4">
-          No app download required • Direct browser access
-        </p>
-      </div>
-
-      {/* Live Connected Viewers & Kick Controller */}
-      <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm print:hidden">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <Users size={18} className="text-indigo-600" />
-            <h3 className="text-sm font-bold text-slate-800">Connected Viewers</h3>
-          </div>
-          <span className="text-xs font-semibold px-2 py-0.5 bg-slate-100 text-slate-700 rounded-full">
-            {participants.length} Active
-          </span>
-        </div>
-
-        {participants.length === 0 ? (
-          <p className="text-xs text-slate-400">Waiting for participants to scan or join...</p>
-        ) : (
-          <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
-            {participants.map((user) => (
-              <div key={user.id} className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-100 text-xs">
-                <span className="font-semibold text-slate-800">{user.name}</span>
-                <button
-                  onClick={() => kickGuest(user.id)}
-                  className="flex items-center gap-1 text-[11px] font-bold text-red-600 hover:text-red-700 hover:bg-red-50 px-2 py-1 rounded-md transition"
-                >
-                  <UserX size={13} /> Kick
-                </button>
+            {session?.pin && (
+              <div>
+                <p className="text-slate-500 uppercase text-[10px] tracking-wider">Pin Code</p>
+                <p className="font-bold text-sm text-indigo-400">{session.pin}</p>
               </div>
-            ))}
+            )}
           </div>
-        )}
-      </div>
 
-      {/* Screen Sharing Control */}
-      <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm print:hidden">
-        <h3 className="text-sm font-bold text-slate-800 mb-2">Live Screen Share</h3>
-        {!isSharing ? (
           <button
-            onClick={startScreenShare}
-            className="w-full flex items-center justify-center gap-2 bg-slate-900 hover:bg-slate-800 text-white font-medium py-3 rounded-xl transition shadow"
+            onClick={handleCopy}
+            className="w-full flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 py-2.5 px-4 rounded-xl text-xs font-medium transition"
           >
-            <Monitor size={18} /> Start Sharing My Screen
+            {copied ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+            {copied ? 'Link Copied!' : 'Copy Share Link'}
           </button>
-        ) : (
-          <div className="space-y-2">
-            <div className="flex items-center justify-between bg-emerald-50 text-emerald-700 px-4 py-2.5 rounded-xl text-xs font-semibold">
-              <span className="flex items-center gap-2">
-                <span className="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-ping" />
-                Screen is Live
-              </span>
-              <span>All viewers can view</span>
-            </div>
-            <button
-              onClick={stopScreenShare}
-              className="w-full flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 text-white font-medium py-2.5 rounded-xl transition"
-            >
-              <StopCircle size={18} /> Stop Sharing
-            </button>
-          </div>
-        )}
-      </div>
+        </div>
 
-      {/* Host Upload Area & Real-time Uploaded Preview */}
-      <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm print:hidden">
-        <h3 className="text-sm font-bold text-slate-800 mb-2">Upload Assets (Images & Videos)</h3>
-        <label className="flex flex-col items-center justify-center border-2 border-dashed border-indigo-200 rounded-xl p-4 cursor-pointer hover:bg-indigo-50/50 transition mb-4">
-          <Upload className="text-indigo-600 mb-1" size={24} />
-          <span className="text-xs font-semibold text-indigo-600">
-            {uploading ? 'Uploading Files...' : 'Click to Upload Images or Videos'}
-          </span>
-          <span className="text-[11px] text-slate-400">Multiple files supported</span>
-          <input
-            type="file"
-            multiple
-            accept="image/*,video/*"
-            onChange={handleFileUpload}
-            disabled={uploading}
-            className="hidden"
-          />
-        </label>
-
-        {/* Host File Previews */}
-        {uploadedFiles.length > 0 && (
-          <div>
-            <h4 className="text-xs font-bold text-slate-600 mb-2">Uploaded Assets ({uploadedFiles.length}):</h4>
-            <div className="grid grid-cols-4 gap-2">
-              {uploadedFiles.map((file) => (
-                <div
-                  key={file.id}
-                  onClick={() => { setActiveMedia(file); setRotation(0); }}
-                  className="group relative h-20 rounded-lg overflow-hidden border border-slate-200 cursor-pointer bg-slate-100"
-                >
-                  {file.type === 'image' ? (
-                    <img src={file.url} alt="" className="w-full h-full object-cover" />
-                  ) : (
-                    <div className="w-full h-full bg-slate-900 flex items-center justify-center text-white text-[10px]">Video</div>
-                  )}
-                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white transition">
-                    <Eye size={16} />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Media Lightbox with Rotate Tool */}
-      {activeMedia && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="relative max-w-2xl w-full bg-slate-900 rounded-2xl overflow-hidden shadow-2xl p-4 flex flex-col items-center">
-            <div className="w-full flex justify-between items-center text-white mb-3">
-              <span className="text-xs truncate max-w-[200px]">{activeMedia.originalName}</span>
-              <div className="flex items-center gap-2">
+        {/* Right Column (2 cols): Media Assets & Participants */}
+        <div className="md:col-span-2 space-y-6">
+          {/* File Upload & Assets List */}
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-5 shadow-xl">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                  <FileText size={18} className="text-indigo-400" />
+                  Presentation Assets & Files
+                </h3>
+                <p className="text-xs text-slate-400">Upload images or videos for viewers</p>
+              </div>
+              <div>
+                <input
+                  type="file"
+                  multiple
+                  ref={fileInputRef}
+                  onChange={handleFileChange}
+                  className="hidden"
+                  accept="image/*,video/*"
+                />
                 <button
-                  onClick={() => setRotation((r) => (r + 90) % 360)}
-                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white transition flex items-center gap-1 text-xs"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isUploading}
+                  className="flex items-center gap-2 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 px-4 py-2 rounded-xl text-xs font-semibold transition"
                 >
-                  <RotateCw size={14} /> Rotate
-                </button>
-                <a
-                  href={activeMedia.url}
-                  download
-                  target="_blank"
-                  rel="noreferrer"
-                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white transition"
-                >
-                  <Download size={14} />
-                </a>
-                <button
-                  onClick={() => setActiveMedia(null)}
-                  className="p-1.5 rounded-lg bg-red-600/80 hover:bg-red-600 text-white transition"
-                >
-                  <X size={16} />
+                  <FolderPlus size={16} />
+                  {isUploading ? 'Uploading...' : 'Upload Files'}
                 </button>
               </div>
             </div>
 
-            <div className="w-full h-[60vh] flex items-center justify-center overflow-hidden bg-black/50 rounded-xl">
-              {activeMedia.type === 'image' ? (
-                <img
-                  src={activeMedia.url}
-                  alt=""
-                  style={{ transform: `rotate(${rotation}deg)` }}
-                  className="max-h-full max-w-full object-contain transition-transform duration-300"
-                />
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 max-h-56 overflow-y-auto pr-1">
+              {files.length === 0 ? (
+                <div className="col-span-full py-8 text-center text-slate-500 text-xs">
+                  No assets uploaded yet. Upload files to share with viewers.
+                </div>
               ) : (
-                <video
-                  src={activeMedia.url}
-                  controls
-                  style={{ transform: `rotate(${rotation}deg)` }}
-                  className="max-h-full max-w-full object-contain transition-transform duration-300"
-                />
+                files.map((file) => (
+                  <a
+                    key={file.id || file.url}
+                    href={file.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="p-3 bg-slate-800/60 border border-slate-700/60 rounded-xl flex items-center gap-2.5 hover:bg-slate-800 transition text-slate-200 text-xs truncate"
+                  >
+                    {file.type === 'video' ? (
+                      <Video size={16} className="text-rose-400 shrink-0" />
+                    ) : (
+                      <ImageIcon size={16} className="text-indigo-400 shrink-0" />
+                    )}
+                    <span className="truncate">{file.originalName || file.fileName}</span>
+                  </a>
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* Active Participants List */}
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-4 shadow-xl">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                <Users size={18} className="text-emerald-400" />
+                Live Participants ({participants.length})
+              </h3>
+            </div>
+
+            <div className="flex flex-wrap gap-2 max-h-36 overflow-y-auto pr-1">
+              {participants.length === 0 ? (
+                <p className="text-xs text-slate-500 py-3">Waiting for attendees to connect...</p>
+              ) : (
+                participants.map((p) => (
+                  <div
+                    key={p.id}
+                    className="flex items-center gap-2 bg-slate-800 border border-slate-700 px-3 py-1.5 rounded-xl text-xs text-slate-200"
+                  >
+                    <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                    <span>{p.name}</span>
+                    {onKickParticipant && (
+                      <button
+                        onClick={() => onKickParticipant(p.id)}
+                        className="text-slate-500 hover:text-red-400 ml-1 transition"
+                        title="Remove attendee"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    )}
+                  </div>
+                ))
               )}
             </div>
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }
