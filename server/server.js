@@ -12,10 +12,10 @@ import { AccessToken } from 'livekit-server-sdk';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// LiveKit Cloud Credentials
+// LiveKit Cloud Credentials (Updated with active key)
 const LIVEKIT_URL = 'wss://instant-hub-br7tau7z.livekit.cloud';
-const LIVEKIT_API_KEY = 'APIluAXhXfvRoZZa';
-const LIVEKIT_API_SECRET = 'hyt8ssdexbb1v0uZ15OVPeCApbSSkzSICmZcbqh2kdd';
+const LIVEKIT_API_KEY = 'APImTWHRJzzoSpx';
+const LIVEKIT_API_SECRET = 'BZWoCxeen7kIFyNm8U222fBsno6pcQmUJp7PorvSFdYB';
 
 const app = express();
 const server = http.createServer(app);
@@ -76,6 +76,7 @@ app.post('/api/sessions/create', (req, res) => {
 
   const sessionData = {
     code: roomCode,
+    roomCode: roomCode,
     title: title || 'Workspace Hub',
     hostSecret,
     pin,
@@ -91,6 +92,8 @@ app.post('/api/sessions/create', (req, res) => {
   res.status(201).json({
     success: true,
     roomCode,
+    code: roomCode,
+    title: sessionData.title,
     hostSecret,
     pin,
     expiresAt,
@@ -106,16 +109,20 @@ app.post('/api/livekit/token', async (req, res) => {
       return res.status(400).json({ error: 'roomCode aur participantName zaroori hain' });
     }
 
+    const cleanRoom = roomCode.trim().toLowerCase();
+    const identity = `${participantName.trim()}-${Date.now().toString().slice(-4)}`;
+
     const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
-      identity: participantName + '-' + nanoid(4),
-      name: participantName
+      identity,
+      name: participantName.trim()
     });
 
     at.addGrant({
       roomJoin: true,
-      room: roomCode.toLowerCase(),
+      room: cleanRoom,
       canPublish: Boolean(isHost),
-      canSubscribe: true
+      canSubscribe: true,
+      canPublishData: true
     });
 
     const token = await at.toJwt();
@@ -182,18 +189,19 @@ app.post('/api/sessions/:roomCode/files', (req, res) => {
 // Socket.io Participant Management
 io.on('connection', (socket) => {
   socket.on('join-room', ({ roomCode, isHost, guestName }) => {
-    socket.join(roomCode);
-    socket.data.roomCode = roomCode;
+    const cleanRoom = (roomCode || '').toLowerCase();
+    socket.join(cleanRoom);
+    socket.data.roomCode = cleanRoom;
     socket.data.isHost = isHost;
 
     if (!isHost) {
       const name = (guestName || 'Guest User').trim();
       socket.data.name = name;
 
-      let participants = roomParticipants.get(roomCode);
+      let participants = roomParticipants.get(cleanRoom);
       if (!participants) {
         participants = new Map();
-        roomParticipants.set(roomCode, participants);
+        roomParticipants.set(cleanRoom, participants);
       }
 
       for (const [sId, p] of participants.entries()) {
@@ -205,17 +213,18 @@ io.on('connection', (socket) => {
       participants.set(socket.id, { id: socket.id, name });
 
       const list = Array.from(participants.values());
-      io.to(roomCode).emit('participants-update', list);
-      socket.to(roomCode).emit('guest-joined', { guestId: socket.id, guestName: name });
+      io.to(cleanRoom).emit('participants-update', list);
+      socket.to(cleanRoom).emit('guest-joined', { guestId: socket.id, guestName: name });
     }
   });
 
   socket.on('kick-participant', ({ roomCode, guestId }) => {
+    const cleanRoom = (roomCode || '').toLowerCase();
     io.to(guestId).emit('kicked-out');
-    const participants = roomParticipants.get(roomCode);
+    const participants = roomParticipants.get(cleanRoom);
     if (participants) {
       participants.delete(guestId);
-      io.to(roomCode).emit('participants-update', Array.from(participants.values()));
+      io.to(cleanRoom).emit('participants-update', Array.from(participants.values()));
     }
   });
 
