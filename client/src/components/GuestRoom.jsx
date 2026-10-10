@@ -136,12 +136,25 @@ export default function GuestRoom() {
     loadFiles(pin);
   };
 
-  const toggleFullscreen = () => {
+  const toggleFullscreen = async () => {
     if (videoContainerRef.current) {
       if (!document.fullscreenElement) {
-        videoContainerRef.current.requestFullscreen().catch((err) => alert(err.message));
+        try {
+          await videoContainerRef.current.requestFullscreen();
+          // Mobile screen ko horizontal (landscape) rotate karne ke liye
+          if (window.screen.orientation && window.screen.orientation.lock) {
+            await window.screen.orientation.lock('landscape').catch(() => {});
+          }
+        } catch (err) {
+          console.error(err);
+        }
       } else {
-        document.exitFullscreen();
+        if (document.exitFullscreen) {
+          await document.exitFullscreen();
+        }
+        if (window.screen.orientation && window.screen.orientation.unlock) {
+          window.screen.orientation.unlock();
+        }
       }
     }
   };
@@ -247,11 +260,14 @@ export default function GuestRoom() {
           </div>
         ) : (
           <>
-            {/* Live Screen Video Element with Fullscreen */}
+            {/* Live Screen Video Element with Landscape Fullscreen */}
             <div 
               ref={videoContainerRef}
-              className={`bg-black rounded-2xl overflow-hidden border border-slate-800 shadow-xl relative ${hasLiveScreen ? 'flex flex-col' : 'hidden'}`}
+              className={`bg-black rounded-2xl overflow-hidden border border-slate-800 shadow-xl relative w-full ${
+                hasLiveScreen ? 'flex flex-col' : 'hidden'
+              } [&:fullscreen]:rounded-none [&:fullscreen]:border-none [&:fullscreen]:w-screen [&:fullscreen]:h-screen`}
             >
+              {/* Header Bar */}
               <div className="bg-slate-900/90 px-4 py-2.5 flex items-center justify-between text-xs text-slate-200 border-b border-slate-800 shrink-0">
                 <span className="flex items-center gap-2 font-bold">
                   <span className="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse" />
@@ -265,12 +281,14 @@ export default function GuestRoom() {
                 </button>
               </div>
               
-              <div className="w-full flex-1 flex items-center justify-center bg-black">
+              {/* Video Element */}
+              <div className="w-full flex-1 flex items-center justify-center bg-black h-full">
                 <video
                   ref={videoRef}
                   autoPlay
                   playsInline
-                  className="w-full h-auto max-h-[75vh] object-contain bg-black"
+                  muted
+                  className="w-full h-full object-contain max-h-[75vh] [&:fullscreen]:max-h-none"
                 />
               </div>
             </div>
