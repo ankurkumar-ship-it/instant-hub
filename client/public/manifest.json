@@ -1,0 +1,22 @@
+{
+  "short_name": "Instant Hub",
+  "name": "Instant Hub - Realtime Workspace",
+  "icons": [
+    {
+      "src": "/icon.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "/icon.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#020617",
+  "theme_color": "#4f46e5",
+  "display": "standalone",
+  "orientation": "any"
+}
