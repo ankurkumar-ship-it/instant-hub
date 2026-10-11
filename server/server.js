@@ -186,7 +186,7 @@ app.post('/api/sessions/:roomCode/files', (req, res) => {
   res.json({ success: true, files });
 });
 
-// Socket.io Participant Management
+// Socket.io Participant Sync
 io.on('connection', (socket) => {
   socket.on('join-room', ({ roomCode, isHost, guestName }) => {
     const cleanRoom = (roomCode || '').toLowerCase();
@@ -194,30 +194,24 @@ io.on('connection', (socket) => {
     socket.data.roomCode = cleanRoom;
     socket.data.isHost = isHost;
 
+    let participants = roomParticipants.get(cleanRoom);
+    if (!participants) {
+      participants = new Map();
+      roomParticipants.set(cleanRoom, participants);
+    }
+
     if (!isHost) {
       const name = (guestName || 'Guest User').trim();
       socket.data.name = name;
-
-      let participants = roomParticipants.get(cleanRoom);
-      if (!participants) {
-        participants = new Map();
-        roomParticipants.set(cleanRoom, participants);
-      }
-
-      for (const [sId, p] of participants.entries()) {
-        if (p.name.toLowerCase() === name.toLowerCase()) {
-          participants.delete(sId);
-        }
-      }
-
       participants.set(socket.id, { id: socket.id, name });
-
-      const list = Array.from(participants.values());
-      io.to(cleanRoom).emit('participants-update', list);
-      socket.to(cleanRoom).emit('guest-joined', { guestId: socket.id, guestName: name });
     }
+
+    // Host aur Room ke sabhi logon ko updated list bhejein
+    const list = Array.from(participants.values());
+    io.to(cleanRoom).emit('participants-update', list);
   });
 
+  // Host participant ko kick kare
   socket.on('kick-participant', ({ roomCode, guestId }) => {
     const cleanRoom = (roomCode || '').toLowerCase();
     io.to(guestId).emit('kicked-out');
