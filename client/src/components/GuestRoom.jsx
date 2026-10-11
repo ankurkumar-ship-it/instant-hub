@@ -1,8 +1,20 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, Link } from 'react-router-dom';
 import { Room, RoomEvent, Track } from 'livekit-client';
 import { io } from 'socket.io-client';
-import { Maximize2, Minimize2, Download, Image as ImageIcon, Video, User } from 'lucide-react';
+import { 
+  Maximize2, 
+  Minimize2, 
+  Download, 
+  ImageIcon, 
+  Video, 
+  Radio, 
+  ShieldCheck, 
+  ArrowLeft,
+  Sparkles,
+  FileDown,
+  Monitor
+} from 'lucide-react';
 
 export default function GuestRoom() {
   const { roomCode } = useParams();
@@ -13,13 +25,14 @@ export default function GuestRoom() {
   const [files, setFiles] = useState([]);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const [hasActiveStream, setHasActiveStream] = useState(false);
 
   const videoContainerRef = useRef(null);
   const videoElementRef = useRef(null);
   const roomRef = useRef(null);
   const socketRef = useRef(null);
 
-  // 1. Join Form Submit
+  // 1. Join Workspace Session
   const handleJoin = async (e) => {
     e.preventDefault();
     if (!name.trim()) return;
@@ -27,7 +40,7 @@ export default function GuestRoom() {
     try {
       setErrorMsg('');
 
-      // Step A: Token fetch karein
+      // Step A: Request LiveKit Participant Token
       const res = await fetch('/api/livekit/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -40,10 +53,10 @@ export default function GuestRoom() {
 
       const data = await res.json();
       if (!res.ok || !data.token) {
-        throw new Error(data.error || 'Token fetch fail ho gaya');
+        throw new Error(data.error || 'Failed to authenticate workspace token');
       }
 
-      // Step B: Socket.io se host ko apna naam bhejein
+      // Step B: Socket.io Participant Sync
       const socket = io();
       socketRef.current = socket;
 
@@ -53,54 +66,61 @@ export default function GuestRoom() {
         guestName: name.trim()
       });
 
-      // Host agar remove kare
       socket.on('kicked-out', () => {
-        alert('Host ne aapko room se remove kar diya hai.');
+        alert('You have been removed from this session by the host.');
         window.location.href = '/';
       });
 
-      // Step C: LiveKit Stream Connect
-      const room = new Room({ adaptiveStream: true, dynacast: true });
+      // Step C: High-Fidelity LiveKit Room Initialization
+      const room = new Room({
+        adaptiveStream: true,
+        dynacast: true,
+      });
       roomRef.current = room;
 
-      room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
+      room.on(RoomEvent.TrackSubscribed, (track) => {
         if (track.kind === Track.Kind.Video && videoElementRef.current) {
           track.attach(videoElementRef.current);
+          setHasActiveStream(true);
         }
       });
 
       room.on(RoomEvent.TrackUnsubscribed, (track) => {
         track.detach();
+        setHasActiveStream(false);
       });
 
       await room.connect(data.serverUrl, data.token);
 
-      // Agar screen track pehle se share ho raha ho
-      room.remoteParticipants.forEach((p) => {
-        p.trackPublications.forEach((pub) => {
-          if (pub.track && pub.track.kind === Track.Kind.Video && videoElementRef.current) {
-            pub.track.attach(videoElementRef.current);
+      // Check existing published tracks
+      room.remoteParticipants.forEach((participant) => {
+        participant.trackPublications.forEach((publication) => {
+          if (publication.track && publication.track.kind === Track.Kind.Video && videoElementRef.current) {
+            publication.track.attach(videoElementRef.current);
+            setHasActiveStream(true);
           }
         });
       });
 
-      // Files load karein
+      // Step D: Fetch Shared Assets
       const fileRes = await fetch(`/api/sessions/${cleanRoom}/files`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({})
       });
       const fileData = await fileRes.json();
-      if (fileData.success) setFiles(fileData.files || []);
+      if (fileData.success) {
+        setFiles(fileData.files || []);
+      }
 
       setJoined(true);
     } catch (err) {
       console.error(err);
-      setErrorMsg(err.message || 'Room join karne me error');
+      setErrorMsg(err.message || 'Unable to connect to the session. Please check your network.');
     }
   };
 
-  // 2. Google Meet jaisa Real Fullscreen Toggle
+  // 2. Fullscreen Toggle (Google Meet Landscape Fit)
   const toggleFullscreen = () => {
     const elem = videoContainerRef.current;
     if (!elem) return;
@@ -137,7 +157,7 @@ export default function GuestRoom() {
     };
   }, []);
 
-  // Download Handler
+  // 3. Asset Download Handler
   const handleDownload = async (fileUrl, fileName) => {
     try {
       const response = await fetch(fileUrl);
@@ -145,7 +165,7 @@ export default function GuestRoom() {
       const blobUrl = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = blobUrl;
-      link.download = fileName || 'download';
+      link.download = fileName || 'presentation-asset';
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -155,102 +175,209 @@ export default function GuestRoom() {
     }
   };
 
+  // Join Modal Screen
   if (!joined) {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
-        <form onSubmit={handleJoin} className="bg-slate-900 border border-slate-800 p-8 rounded-3xl w-full max-w-sm space-y-4 shadow-2xl">
-          <div className="text-center space-y-1">
-            <span className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Join Workspace</span>
-            <h2 className="text-2xl font-bold text-white">Room: {cleanRoom.toUpperCase()}</h2>
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+        <div className="w-full max-w-md bg-white rounded-3xl border border-slate-200/90 p-8 shadow-xl space-y-6">
+          <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+            <Link to="/" className="inline-flex items-center gap-2 text-xs font-semibold text-slate-500 hover:text-indigo-600 transition">
+              <ArrowLeft size={16} />
+              Home
+            </Link>
+            <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-indigo-50 border border-indigo-100 rounded-full text-indigo-700 text-xs font-bold">
+              <Radio size={12} className="animate-pulse" />
+              Room: {cleanRoom.toUpperCase()}
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <h2 className="text-2xl font-extrabold text-slate-900 tracking-tight">Join Workspace</h2>
+            <p className="text-xs font-medium text-slate-500">
+              Enter your name to connect to this live presentation room.
+            </p>
           </div>
 
           {errorMsg && (
-            <div className="p-3 bg-red-500/10 border border-red-500/20 text-red-400 text-xs rounded-xl text-center">
+            <div className="p-3.5 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-2xl font-medium">
               {errorMsg}
             </div>
           )}
 
-          <div>
-            <label className="text-xs font-semibold text-slate-400 mb-1 block">Aapka Naam</label>
-            <input
-              type="text"
-              required
-              placeholder="e.g. Rahul"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="w-full bg-slate-800 border border-slate-700 px-4 py-2.5 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
-            />
-          </div>
+          <form onSubmit={handleJoin} className="space-y-4">
+            <div>
+              <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
+                Your Full Name
+              </label>
+              <input
+                type="text"
+                required
+                placeholder="e.g. Alex Morgan"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="w-full px-4 py-3 rounded-2xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-600 text-sm font-medium bg-slate-50/50 transition"
+              />
+            </div>
 
-          <button
-            type="submit"
-            className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 rounded-xl transition shadow-lg shadow-indigo-600/30 text-sm"
-          >
-            Join Workspace
-          </button>
-        </form>
+            <button
+              type="submit"
+              className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3.5 rounded-2xl transition shadow-lg shadow-indigo-100 flex items-center justify-center gap-2 text-sm"
+            >
+              <Sparkles size={16} />
+              Join Workspace Now
+            </button>
+          </form>
+
+          <div className="flex items-center justify-center gap-2 text-slate-400 text-xs pt-1">
+            <ShieldCheck size={14} className="text-emerald-500" />
+            <span>Encrypted Live Stream • 1080p Ultra HD</span>
+          </div>
+        </div>
       </div>
     );
   }
 
+  // Active Presentation View (White Workspace + Mobile Window Display)
   return (
-    <div className="min-h-screen bg-slate-950 text-white p-4 space-y-4">
-      {/* Google Meet Style Video Player */}
-      <div
-        ref={videoContainerRef}
-        className={`relative w-full bg-black rounded-3xl overflow-hidden flex items-center justify-center border border-slate-800 ${
-          isFullscreen ? 'w-screen h-screen rounded-none border-none' : 'aspect-video max-h-[70vh]'
-        }`}
-      >
-        <video
-          ref={videoElementRef}
-          autoPlay
-          playsInline
-          className="w-full h-full object-contain"
-        />
+    <div className="min-h-screen bg-slate-50 text-slate-900 p-4 sm:p-6 lg:p-8 flex flex-col items-center">
+      <div className="w-full max-w-5xl space-y-6">
 
-        {/* Top Controls Overlay */}
-        <div className="absolute top-4 right-4 z-30 flex items-center gap-2">
-          <button
-            onClick={toggleFullscreen}
-            className="p-2.5 bg-slate-900/80 hover:bg-indigo-600 text-white rounded-xl backdrop-blur-md transition shadow-lg"
-            title="Google Meet Fullscreen"
-          >
-            {isFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
-          </button>
+        {/* Top Room Information Card */}
+        <div className="bg-white border border-slate-200/90 rounded-3xl p-5 sm:p-6 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div className="flex items-center gap-3.5">
+            <div className="w-11 h-11 rounded-2xl bg-indigo-600 flex items-center justify-center text-white shadow-md shadow-indigo-100">
+              <Monitor size={22} />
+            </div>
+            <div>
+              <h1 className="text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2">
+                Live Broadcast Window
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+              </h1>
+              <p className="text-xs text-slate-500 font-medium">
+                Room: <span className="font-bold text-slate-700 font-mono">{cleanRoom.toUpperCase()}</span> • Viewer: {name}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={toggleFullscreen}
+              className="flex items-center gap-2 px-4 py-2.5 bg-slate-900 hover:bg-indigo-600 text-white rounded-2xl text-xs font-bold transition shadow-md"
+            >
+              <Maximize2 size={15} />
+              Fullscreen View
+            </button>
+          </div>
         </div>
 
-        {/* Screen Watermark */}
-        <div className="absolute bottom-4 left-4 z-30 pointer-events-none">
-          <span className="px-3 py-1 bg-black/60 backdrop-blur-md text-[11px] text-slate-300 rounded-full border border-white/10">
-            Live Stream • {cleanRoom.toUpperCase()}
-          </span>
-        </div>
-      </div>
+        {/* Native Mobile Window Frame Container */}
+        <div
+          ref={videoContainerRef}
+          className={`relative bg-slate-950 rounded-3xl overflow-hidden shadow-2xl border border-slate-800 flex flex-col justify-center items-center ${
+            isFullscreen ? 'w-screen h-screen rounded-none border-none' : 'w-full aspect-[16/9] min-h-[360px] max-h-[75vh]'
+          }`}
+        >
+          {/* Stream Overlay Status Header */}
+          <div className="absolute top-4 left-4 right-4 z-20 flex items-center justify-between pointer-events-none">
+            <div className="flex items-center gap-2 bg-slate-900/80 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-white/10 text-white text-xs font-medium">
+              <span className={`w-2 h-2 rounded-full ${hasActiveStream ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+              {hasActiveStream ? 'Crisp Screen Share Active' : 'Waiting for Host Screen...'}
+            </div>
 
-      {/* Files Section */}
-      <div className="bg-slate-900 border border-slate-800 p-6 rounded-3xl space-y-4">
-        <h3 className="text-base font-bold text-slate-200">Shared Files & Assets</h3>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-60 overflow-y-auto">
-          {files.length === 0 ? (
-            <p className="text-xs text-slate-500 col-span-full">Abhi tak koi file share nahi ki gayi hai.</p>
-          ) : (
-            files.map((file) => (
-              <div key={file.id || file.url} className="p-3 bg-slate-800/80 border border-slate-700/60 rounded-xl flex items-center justify-between gap-3 text-xs">
-                <div className="flex items-center gap-2 truncate">
-                  {file.type === 'video' ? <Video size={16} className="text-rose-400 shrink-0" /> : <ImageIcon size={16} className="text-indigo-400 shrink-0" />}
-                  <span className="truncate">{file.originalName || file.fileName}</span>
-                </div>
-                <button
-                  onClick={() => handleDownload(file.url, file.originalName || file.fileName)}
-                  className="p-1.5 bg-slate-700 hover:bg-indigo-600 text-white rounded-lg transition shrink-0"
-                >
-                  <Download size={14} />
-                </button>
+            <button
+              onClick={toggleFullscreen}
+              className="pointer-events-auto p-2 bg-slate-900/80 hover:bg-indigo-600 text-white rounded-xl backdrop-blur-md transition shadow-md border border-white/10"
+              title="Toggle Fullscreen"
+            >
+              {isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+            </button>
+          </div>
+
+          {/* High-Fidelity Video Surface */}
+          <video
+            ref={videoElementRef}
+            autoPlay
+            playsInline
+            muted
+            style={{
+              imageRendering: '-webkit-optimize-contrast',
+              transform: 'translateZ(0)',
+              backfaceVisibility: 'hidden'
+            }}
+            className="w-full h-full object-contain select-none"
+          />
+
+          {/* Waiting Placeholder */}
+          {!hasActiveStream && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center space-y-3 z-10 bg-slate-950/90 backdrop-blur-sm">
+              <div className="w-14 h-14 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+                <Radio size={26} className="animate-pulse" />
               </div>
-            ))
+              <p className="text-white text-sm font-semibold tracking-wide">
+                Waiting for host to start screen broadcast
+              </p>
+              <p className="text-xs text-slate-400 max-w-xs">
+                As soon as the presenter shares their screen, it will automatically render here in high definition.
+              </p>
+            </div>
           )}
         </div>
+
+        {/* Shared Files & Presentation Assets */}
+        <div className="bg-white border border-slate-200/90 rounded-3xl p-6 shadow-sm space-y-5">
+          <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+            <div>
+              <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                <FileDown size={18} className="text-indigo-600" />
+                Session Assets & Downloads
+              </h2>
+              <p className="text-xs text-slate-500">Tap to download files uploaded by the presenter</p>
+            </div>
+            <span className="px-3 py-1 bg-slate-100 text-slate-600 rounded-full text-xs font-semibold">
+              {files.length} Files
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3.5 max-h-64 overflow-y-auto pr-1">
+            {files.length === 0 ? (
+              <div className="col-span-full py-10 text-center text-slate-400 text-xs">
+                No files or slides shared yet for this session.
+              </div>
+            ) : (
+              files.map((file) => (
+                <div
+                  key={file.id || file.url}
+                  className="p-3.5 bg-slate-50 border border-slate-200/70 rounded-2xl flex items-center justify-between gap-3 hover:bg-slate-100/80 transition"
+                >
+                  <div className="flex items-center gap-2.5 truncate">
+                    {file.type === 'video' ? (
+                      <Video size={18} className="text-rose-500 shrink-0" />
+                    ) : (
+                      <ImageIcon size={18} className="text-indigo-500 shrink-0" />
+                    )}
+                    <div className="truncate">
+                      <p className="text-xs font-semibold text-slate-800 truncate">
+                        {file.originalName || file.fileName}
+                      </p>
+                      <p className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">
+                        {file.type}
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => handleDownload(file.url, file.originalName || file.fileName)}
+                    className="p-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow-sm transition shrink-0"
+                    title="Download asset"
+                  >
+                    <Download size={14} />
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
       </div>
     </div>
   );
